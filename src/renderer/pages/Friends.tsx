@@ -4,10 +4,18 @@ import { useChampionData, getChampionName } from "../hooks/useChampions";
 import type { TeammateStats } from "../lib/types";
 import ChampionIcon from "../components/ChampionIcon";
 import WinRateBar from "../components/WinRateBar";
+import FriendMatchesPanel from "../components/FriendMatchesPanel";
 import { formatTimeAgo, kdaRatio, kdaColor, winRatePercent, winRateColor } from "../lib/format";
 
-type SortKey = "games" | "winRate" | "kda" | "lastPlayed";
+type SortKey = "games" | "winRate" | "kda" | "score" | "lastPlayed";
 type SortDir = "asc" | "desc";
+
+function scoreColor(score: number | null): string {
+  if (score == null) return "text-gray-500";
+  if (score >= 70) return "text-lol-gold";
+  if (score >= 40) return "text-sky-400";
+  return "text-gray-400";
+}
 
 export default function Friends() {
   const champData = useChampionData();
@@ -15,6 +23,7 @@ export default function Friends() {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("games");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [selected, setSelected] = useState<{ puuid: string; name: string } | null>(null);
 
   useEffect(() => {
     const unsub = window.api.onGamesUpdated(() => refetch());
@@ -44,6 +53,10 @@ export default function Friends() {
         case "kda":
           av = a.deaths > 0 ? (a.kills + a.assists) / a.deaths : a.kills + a.assists;
           bv = b.deaths > 0 ? (b.kills + b.assists) / b.deaths : b.kills + b.assists;
+          break;
+        case "score":
+          av = a.avgScore ?? -1;
+          bv = b.avgScore ?? -1;
           break;
         case "lastPlayed":
           av = a.lastPlayed;
@@ -117,7 +130,7 @@ export default function Friends() {
         </div>
       </div>
 
-      <div className="bg-lol-card rounded-xl border border-lol-border overflow-hidden">
+      <div className="glass rounded-xl overflow-hidden">
         <table className="w-full">
           <thead className="bg-lol-dark/50">
             <tr>
@@ -130,6 +143,7 @@ export default function Friends() {
               <SortHeader label="Games" field="games" />
               <SortHeader label="Win Rate" field="winRate" />
               <SortHeader label="Their KDA" field="kda" />
+              <SortHeader label="Score (vs você)" field="score" />
               <th className="px-3 py-2 text-left text-xs font-medium text-lol-text uppercase tracking-wider">
                 Top Champions
               </th>
@@ -148,7 +162,11 @@ export default function Friends() {
               return (
                 <tr
                   key={t.puuid || t.name}
-                  className="border-t border-lol-border/50 hover:bg-lol-card-hover transition-colors"
+                  onClick={() => t.puuid && setSelected({ puuid: t.puuid, name: t.name })}
+                  title={t.puuid ? "Ver partidas jogadas com este amigo" : undefined}
+                  className={`border-t border-lol-border/50 hover:bg-lol-card-hover transition-colors ${
+                    t.puuid ? "cursor-pointer" : ""
+                  }`}
                 >
                   <td className="px-3 py-2 text-xs text-lol-text">{i + 1}</td>
                   <td className="px-3 py-2">
@@ -165,6 +183,30 @@ export default function Friends() {
                         {avgKills.toFixed(1)} / {avgDeaths.toFixed(1)} / {avgAssists.toFixed(1)}
                       </span>
                     </div>
+                  </td>
+                  <td className="px-3 py-2">
+                    {t.avgScore != null ? (
+                      <div className="flex items-center gap-2">
+                        <span className={`text-sm font-bold ${scoreColor(t.avgScore)}`}>
+                          {t.avgScore}
+                        </span>
+                        {t.avgSelfScore != null &&
+                          (() => {
+                            const d = t.avgScore - t.avgSelfScore;
+                            return (
+                              <span
+                                className={`text-[10px] ${d >= 0 ? "text-emerald-400" : "text-red-400"}`}
+                                title={`Você: ${t.avgSelfScore} nessas partidas`}
+                              >
+                                {d >= 0 ? "+" : ""}
+                                {d}
+                              </span>
+                            );
+                          })()}
+                      </div>
+                    ) : (
+                      <span className="text-sm text-gray-500">—</span>
+                    )}
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-1">
@@ -188,6 +230,15 @@ export default function Friends() {
           <div className="py-8 text-center text-sm text-lol-text">No players found</div>
         )}
       </div>
+
+      {selected && (
+        <FriendMatchesPanel
+          puuid={selected.puuid}
+          name={selected.name}
+          champData={champData}
+          onClose={() => setSelected(null)}
+        />
+      )}
     </div>
   );
 }

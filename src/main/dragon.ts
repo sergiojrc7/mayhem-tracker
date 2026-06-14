@@ -1,6 +1,6 @@
 import https from "https";
 
-let championCache: Record<number, { name: string; key: string }> = {};
+let championCache: Record<number, { name: string; key: string; tags: string[] }> = {};
 let augmentCache: Record<number, { name: string; desc: string; iconPath: string; rarity: string }> =
   {};
 
@@ -48,7 +48,7 @@ export function loadChampionData() {
       );
       championCache = {};
       for (const [key, champ] of Object.entries(data.data) as any[]) {
-        championCache[parseInt(champ.key)] = { name: champ.name, key };
+        championCache[parseInt(champ.key)] = { name: champ.name, key, tags: champ.tags || [] };
       }
       console.log(
         `Loaded ${Object.keys(championCache).length} champions from Data Dragon v${version}`,
@@ -111,6 +111,15 @@ export async function waitForAugmentData() {
 
 export function getChampionData() {
   return championCache;
+}
+
+// Papel principal do campeão (primeira tag do Data Dragon: Fighter, Mage, Tank,
+// Support, Assassin, Marksman). Null se os dados ainda não carregaram — nesse
+// caso o score cai nos pesos padrão. Injetado no motor de score (Inc 1.2).
+export function getChampionRole(championId: number): string | null {
+  const c = championCache[championId];
+  if (!c || !c.tags || c.tags.length === 0) return null;
+  return c.tags[0];
 }
 
 export function getAugmentDataCache() {

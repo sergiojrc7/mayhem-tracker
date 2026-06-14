@@ -1,3 +1,7 @@
+/* Fase 3.1 — Tipografia: Jost (Google Fonts). 400 corpo / 600 labels e valores /
+   700 títulos e scores. Fallback para system-ui se offline.
+   O @import de fonte precisa vir ANTES de tudo (regra CSS @import). */
+@import url("https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600;700&display=swap");
 @import "tailwindcss";
 
 @theme {
@@ -11,12 +15,24 @@
   --color-lol-loss: #dc3545;
   --color-lol-text: #a09b8c;
   --color-lol-text-bright: #f0e6d2;
+
+  /* Fase 3.4 — Paleta atualizada (glass + faixas de score) */
+  --color-glass: rgba(255, 255, 255, 0.04);
+  --color-glass-border: rgba(255, 255, 255, 0.08);
+  --color-score-high: #c89b3c;
+  --color-score-mid: #7cb9e8;
+  --color-score-low: #6b7280;
+
+  --font-sans: "Jost", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 body {
-  background-color: var(--color-lol-dark);
+  /* Fase 3.4 — Gradiente de fundo sutil */
+  background: linear-gradient(160deg, #050508 0%, #0d0d1a 100%);
+  background-attachment: fixed;
   color: var(--color-lol-text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-sans);
+  font-weight: 400;
   overflow: hidden;
 }
 
@@ -25,13 +41,59 @@ body {
   display: flex;
 }
 
+/* ── Fase 3.2 — Glassmorphism ─────────────────────────────────── */
+.glass {
+  background: var(--color-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--color-glass-border);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* ── Fase 3.3 — Perspectiva / profundidade ────────────────────── */
+.depth-hover {
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    border-color 0.18s ease;
+}
+.depth-hover:hover {
+  transform: perspective(800px) rotateX(1.5deg) translateY(-2px);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+}
+
+/* Sombra interna suave (sidebar / painéis) */
+.depth-inset {
+  box-shadow: inset -8px 0 24px -16px rgba(0, 0, 0, 0.8);
+}
+
+/* Brilho dourado animado para badges de score alto (Fase 3.3) */
+@keyframes shimmer {
+  0% {
+    background-position: -150% 0;
+  }
+  100% {
+    background-position: 150% 0;
+  }
+}
+.shimmer-gold {
+  background-image: linear-gradient(
+    110deg,
+    transparent 25%,
+    rgba(240, 230, 210, 0.35) 50%,
+    transparent 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2.8s ease-in-out infinite;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--color-lol-dark);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import ScoreTuning from "../components/ScoreTuning";
 
 export default function Settings() {
   const [minimizeToTray, setMinimizeToTray] = useState(true);
@@ -67,7 +68,7 @@ export default function Settings() {
       <h1 className="text-xl font-bold text-lol-text-bright">Settings</h1>
 
       {/* Exit Behavior */}
-      <div className="bg-lol-card rounded-xl border border-lol-border p-5">
+      <div className="glass rounded-xl p-5">
         <h2 className="text-sm font-semibold text-lol-text-bright mb-4">Exit Behavior</h2>
         <div className="flex items-center justify-between">
           <div>
@@ -96,7 +97,7 @@ export default function Settings() {
       </div>
 
       {/* Data Management */}
-      <div className="bg-lol-card rounded-xl border border-lol-border p-5">
+      <div className="glass rounded-xl p-5">
         <h2 className="text-sm font-semibold text-lol-text-bright mb-4">Data Management</h2>
         <div className="space-y-4">
           <div className="flex items-center justify-between">
@@ -153,6 +154,9 @@ export default function Settings() {
           {repairStatus && <p className="text-xs text-lol-text">{repairStatus}</p>}
         </div>
       </div>
+
+      {/* Fase 4.7 — Score Tuning */}
+      <ScoreTuning />
     </div>
   );
 }

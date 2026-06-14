@@ -11,8 +11,15 @@ import AugmentIcon from "../components/AugmentIcon";
 import ChampionIcon from "../components/ChampionIcon";
 import WinRateBar from "../components/WinRateBar";
 
-type SortKey = "picks" | "winRate" | "name";
+type SortKey = "picks" | "winRate" | "synergy" | "name";
 type SortDir = "asc" | "desc";
+
+function scoreColor(score: number | null): string {
+  if (score == null) return "text-gray-500";
+  if (score >= 70) return "text-lol-gold";
+  if (score >= 40) return "text-sky-400";
+  return "text-gray-400";
+}
 type RarityFilter = "all" | "kSilver" | "kGold" | "kPrismatic";
 
 const rarityFilters: { key: RarityFilter; label: string; color: string; activeColor: string }[] = [
@@ -103,6 +110,9 @@ export default function Augments() {
       } else if (sortKey === "winRate") {
         av = a.picks > 0 ? a.wins / a.picks : 0;
         bv = b.picks > 0 ? b.wins / b.picks : 0;
+      } else if (sortKey === "synergy") {
+        av = a.synergyScore ?? -1;
+        bv = b.synergyScore ?? -1;
       } else {
         av = a.picks;
         bv = b.picks;
@@ -184,7 +194,7 @@ export default function Augments() {
         </div>
       </div>
 
-      <div className="bg-lol-card rounded-xl border border-lol-border overflow-hidden">
+      <div className="glass rounded-xl overflow-hidden">
         <table className="w-full">
           <thead className="bg-lol-dark/50">
             <tr>
@@ -195,6 +205,7 @@ export default function Augments() {
                 Pick Rate
               </th>
               <SortHeader label="Win Rate" field="winRate" className="w-32" />
+              <SortHeader label="Synergy" field="synergy" />
             </tr>
           </thead>
           <tbody>
@@ -223,6 +234,12 @@ export default function Augments() {
                     <td className="px-3 py-2 w-32">
                       <WinRateBar wins={a.wins} total={a.picks} />
                     </td>
+                    <td
+                      className={`px-3 py-2 text-sm font-bold ${scoreColor(a.synergyScore)}`}
+                      title="Score médio das partidas com este augment"
+                    >
+                      {a.synergyScore ?? "—"}
+                    </td>
                   </tr>
                   {isExpanded &&
                     a.champions.map((c) => (
@@ -244,6 +261,7 @@ export default function Augments() {
                         <td className="px-3 py-1.5 w-32">
                           <WinRateBar wins={c.wins} total={c.picks} />
                         </td>
+                        <td></td>
                       </tr>
                     ))}
                 </>

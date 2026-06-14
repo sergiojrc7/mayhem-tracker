@@ -1,10 +1,13 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 const api = {
-  getMatchHistory: (limit: number, offset: number) =>
-    ipcRenderer.invoke("db:match-history", limit, offset),
+  getMatchHistory: (limit: number, offset: number, filters?: unknown) =>
+    ipcRenderer.invoke("db:match-history", limit, offset, filters),
 
   getMatchDetail: (gameId: number) => ipcRenderer.invoke("db:match-detail", gameId),
+
+  getPlayerScoreContext: (gameId: number, participantId: number) =>
+    ipcRenderer.invoke("db:player-score-context", gameId, participantId),
 
   getChampionStats: () => ipcRenderer.invoke("db:champion-stats"),
 
@@ -57,6 +60,12 @@ const api = {
   importData: () => ipcRenderer.invoke("data:import"),
 
   repairPuuids: () => ipcRenderer.invoke("data:repair-puuids"),
+
+  recomputeScores: () => ipcRenderer.invoke("score:recompute"),
+
+  getTierList: () => ipcRenderer.invoke("tiers:list"),
+
+  refreshTiers: () => ipcRenderer.invoke("tiers:refresh"),
 
   getVersion: () => ipcRenderer.invoke("app:version"),
 

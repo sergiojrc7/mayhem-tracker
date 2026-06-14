@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { useState, useCallback, useEffect } from "react";
 import { useLcuStatus } from "../hooks/useLcuStatus";
+import { BUILD_TAG } from "../../build";
 
 const links = [
   { to: "/", label: "Match History", icon: "⚔️" },
@@ -8,6 +9,7 @@ const links = [
   { to: "/augments", label: "Augments", icon: "🎯" },
   { to: "/friends", label: "Friends", icon: "👥" },
   { to: "/global", label: "Total Stats", icon: "🌐" },
+  { to: "/tierlist", label: "Tier List", icon: "📊" },
 ];
 
 const statusColors = {
@@ -27,15 +29,9 @@ export default function Sidebar() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastResult, setLastResult] = useState<string | null>(null);
   const [version, setVersion] = useState("");
-  const [update, setUpdate] = useState<{
-    hasUpdate: boolean;
-    latest?: string;
-    url?: string;
-  } | null>(null);
 
   useEffect(() => {
     window.api.getVersion().then(setVersion);
-    window.api.checkForUpdate().then(setUpdate);
   }, []);
 
   useEffect(() => {
@@ -58,9 +54,16 @@ export default function Sidebar() {
   }, []);
 
   return (
-    <nav className="w-56 bg-lol-card border-r border-lol-border flex flex-col shrink-0">
+    <nav className="w-56 glass depth-inset border-r border-glass-border flex flex-col shrink-0">
       <div className="titlebar-drag h-9 flex items-center px-4">
-        <span className="text-lol-gold font-bold text-sm titlebar-no-drag">MAYHEM TRACKER</span>
+        <span className="text-lol-gold font-bold text-sm tracking-wide titlebar-no-drag">
+          MAYHEM TRACKER
+        </span>
+      </div>
+      <div className="px-4 -mt-1 mb-1">
+        <span className="text-[10px] font-mono text-emerald-400/80 titlebar-no-drag">
+          build: {BUILD_TAG}
+        </span>
       </div>
       <div className="flex flex-col gap-1 p-3 mt-2 flex-1">
         {links.map(({ to, label, icon }) => (
@@ -87,8 +90,8 @@ export default function Sidebar() {
           className={({ isActive }) =>
             `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
               isActive
-                ? "bg-lol-gold/15 text-lol-gold"
-                : "text-lol-text hover:bg-lol-card-hover hover:text-lol-text-bright"
+                ? "bg-lol-gold/15 text-lol-gold border-l-2 border-l-lol-gold shadow-[inset_0_0_18px_-8px_rgba(200,155,60,0.6)]"
+                : "text-lol-text border-l-2 border-l-transparent hover:bg-white/[0.04] hover:text-lol-text-bright"
             }`
           }
         >
@@ -112,24 +115,7 @@ export default function Sidebar() {
           </button>
         </div>
         <div className="flex items-center justify-between mt-1">
-          <button
-            onClick={() =>
-              window.api.openUrl(
-                `https://github.com/Yhprum/mayhem-tracker/releases/tag/v${version}`,
-              )
-            }
-            className="text-[10px] text-lol-text/50 hover:text-lol-text transition-colors cursor-pointer"
-          >
-            v{version}
-          </button>
-          {update?.hasUpdate && (
-            <button
-              onClick={() => window.api.openUrl(update.url!)}
-              className="text-[10px] text-lol-gold hover:text-lol-gold-light transition-colors cursor-pointer"
-            >
-              v{update.latest} available
-            </button>
-          )}
+          <span className="text-[10px] text-lol-text/50">v{version}</span>
         </div>
       </div>
     </nav>

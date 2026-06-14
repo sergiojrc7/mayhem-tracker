@@ -17,7 +17,15 @@ type SortKey =
   | "avg_assists"
   | "avg_damage"
   | "avg_gold"
+  | "avg_score"
   | "multikills";
+
+function scoreColor(score: number | null): string {
+  if (score == null) return "text-gray-500";
+  if (score >= 70) return "text-lol-gold";
+  if (score >= 40) return "text-sky-400";
+  return "text-gray-400";
+}
 type SortDir = "asc" | "desc";
 
 function ChampionExpanded({ championId }: { championId: number }) {
@@ -34,7 +42,7 @@ function ChampionExpanded({ championId }: { championId: number }) {
 
   if (!augStats || !itemStats || !matches) {
     return (
-      <td colSpan={10} className="px-4 py-4">
+      <td colSpan={11} className="px-4 py-4">
         <div className="text-sm text-lol-text text-center">Loading...</div>
       </td>
     );
@@ -175,8 +183,8 @@ export default function Champions() {
         av = a.games > 0 ? a.wins / a.games : 0;
         bv = b.games > 0 ? b.wins / b.games : 0;
       } else {
-        av = (a as any)[sortKey];
-        bv = (b as any)[sortKey];
+        av = (a as any)[sortKey] ?? -1;
+        bv = (b as any)[sortKey] ?? -1;
       }
       return sortDir === "desc" ? bv - av : av - bv;
     });
@@ -231,7 +239,7 @@ export default function Champions() {
         </div>
       </div>
 
-      <div className="bg-lol-card rounded-xl border border-lol-border overflow-hidden">
+      <div className="glass rounded-xl overflow-hidden">
         <table className="w-full">
           <thead className="bg-lol-dark/50">
             <tr>
@@ -248,6 +256,7 @@ export default function Champions() {
               <SortHeader label="Avg A" field="avg_assists" />
               <SortHeader label="Avg Dmg" field="avg_damage" />
               <SortHeader label="Avg Gold" field="avg_gold" />
+              <SortHeader label="Score" field="avg_score" />
               <SortHeader label="Multikills" field="multikills" />
             </tr>
           </thead>
@@ -281,6 +290,9 @@ export default function Champions() {
                   </td>
                   <td className="px-3 py-2 text-sm text-lol-gold">
                     {(c.avg_gold ?? 0).toLocaleString()}
+                  </td>
+                  <td className={`px-3 py-2 text-sm font-bold ${scoreColor(c.avg_score)}`}>
+                    {c.avg_score ?? "—"}
                   </td>
                   <td className="px-3 py-2">
                     <div className="grid grid-cols-4 gap-1 text-[10px]">

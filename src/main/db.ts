@@ -2,6 +2,16 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import { app } from "electron";
+import {
+  computeBaseScore,
+  computeAllParticipantScores,
+  explainScore,
+  toDisplayScore,
+  DEFAULT_WEIGHTS,
+  type ScoreWeights,
+  type ScoreBreakdown,
+} from "./score";
+import { getChampionRole } from "./dragon";
 
 let db: Database.Database;
 
@@ -79,6 +89,13 @@ function createTables() {
     CREATE TABLE IF NOT EXISTS settings (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS champion_tiers (
+      champion_id INTEGER PRIMARY KEY,
+      tier        TEXT NOT NULL,
+      multiplier  REAL NOT NULL,
+      fetched_at  INTEGER NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_games_creation ON games(game_creation DESC);
@@ -173,6 +190,112 @@ function createTables() {
   } catch {
     // Column already exists
   }
+
+  // Migration: add score column to player_stats and backfill from raw_json
+  try {
+    db.exec("ALTER TABLE player_stats ADD COLUMN score REAL");
+    recomputeAllScores();
+  } catch {
+    // Column already exists
+  }
+
+  // Migration: estatísticas estendidas (Fase 4.2). Colunas opcionais já presentes
+  // no raw_json. Adiciona cada coluna isoladamente (ignora se já existe) e faz um
+  // backfill único a partir do raw_json quando alguma coluna foi recém-criada.
+  migrateExtendedStats();
+}
+
+const EXTENDED_STAT_COLUMNS = [
+  "total_time_cc_dealt",
+  "physical_damage",
+  "magic_damage",
+  "true_damage",
+  "vision_score",
+  "time_played",
+  "killing_sprees",
+] as const;
+
+function migrateExtendedStats(): void {
+  let anyAdded = false;
+  for (const col of EXTENDED_STAT_COLUMNS) {
+    try {
+      db.exec(`ALTER TABLE player_stats ADD COLUMN ${col} INTEGER NOT NULL DEFAULT 0`);
+      anyAdded = true;
+    } catch {
+      // Column already exists
+    }
+  }
+  if (!anyAdded) return;
+
+  const rows = db
+    .prepare(`
+      SELECT g.game_id, g.puuid, g.raw_json
+      FROM games g WHERE g.raw_json IS NOT NULL
+    `)
+    .all() as { game_id: number; puuid: string; raw_json: string }[];
+
+  const update = db.prepare(`
+    UPDATE player_stats SET
+      total_time_cc_dealt = ?, physical_damage = ?, magic_damage = ?,
+      true_damage = ?, vision_score = ?, time_played = ?, killing_sprees = ?
+    WHERE game_id = ?
+  `);
+
+  const tx = db.transaction(() => {
+    for (const row of rows) {
+      if (!row.puuid) continue;
+      try {
+        const raw = JSON.parse(row.raw_json);
+        const participants = raw.participants || [];
+        const identities = raw.participantIdentities || [];
+        let s: any = null;
+        for (let i = 0; i < participants.length; i++) {
+          const p = participants[i];
+          const pPuuid = p.puuid || identities[i]?.player?.puuid;
+          if (pPuuid === row.puuid) {
+            s = p.stats || p;
+            break;
+          }
+        }
+        if (!s) continue;
+        const e = extractExtendedStats(s);
+        update.run(
+          e.total_time_cc_dealt,
+          e.physical_damage,
+          e.magic_damage,
+          e.true_damage,
+          e.vision_score,
+          e.time_played,
+          e.killing_sprees,
+          row.game_id,
+        );
+      } catch {
+        /* ignore parse errors */
+      }
+    }
+  });
+  tx();
+}
+
+// Extrai as estatísticas estendidas (Fase 4.2) do bloco de stats de um participante.
+function extractExtendedStats(s: any): {
+  total_time_cc_dealt: number;
+  physical_damage: number;
+  magic_damage: number;
+  true_damage: number;
+  vision_score: number;
+  time_played: number;
+  killing_sprees: number;
+} {
+  return {
+    total_time_cc_dealt: s.totalTimeCCDealt ?? s.timeCCingOthers ?? 0,
+    physical_damage: s.physicalDamageDealtToChampions ?? 0,
+    magic_damage: s.magicDamageDealtToChampions ?? 0,
+    true_damage: s.trueDamageDealtToChampions ?? 0,
+    vision_score: s.visionScore ?? 0,
+    time_played: s.timePlayed ?? 0,
+    killing_sprees: s.killingSprees ?? 0,
+  };
 }
 
 function detectRemake(gameDuration: number, rawJson: string | null): boolean {
@@ -227,26 +350,79 @@ function extractGameMaxStats(rawJson: string | null): {
 
 // ---- Query functions ----
 
-export function getMatchHistory(limit: number, offset: number): { matches: any[]; total: number } {
-  const total = db.prepare("SELECT COUNT(*) as count FROM games").get() as any;
+// Filtros do Match History (Fase 4.1). Todos opcionais; combinam via AND.
+export interface MatchFilters {
+  championId?: number;
+  result?: "win" | "loss";
+  /** Janela em dias a partir de agora (ex.: 7, 30). */
+  days?: number;
+  /** Ordenação: "recent" (padrão) ou "score" (maior nota primeiro). */
+  sort?: "recent" | "score";
+  /** Apenas partidas em que este puuid participou (histórico com amigo). */
+  withPuuid?: string;
+}
+
+export function getMatchHistory(
+  limit: number,
+  offset: number,
+  filters: MatchFilters = {},
+): { matches: any[]; total: number } {
+  const where: string[] = [];
+  const params: any[] = [];
+
+  if (filters.championId !== undefined) {
+    where.push("ps.champion_id = ?");
+    params.push(filters.championId);
+  }
+  if (filters.result === "win") {
+    where.push("ps.win = 1");
+  } else if (filters.result === "loss") {
+    where.push("ps.win = 0 AND g.is_remake = 0");
+  }
+  if (filters.days !== undefined) {
+    where.push("g.game_creation >= ?");
+    params.push(Date.now() - filters.days * 86_400_000);
+  }
+  if (filters.withPuuid) {
+    // puuid é uma string única de 78 chars → LIKE no raw_json é seguro o bastante.
+    where.push("g.raw_json LIKE ?");
+    params.push(`%${filters.withPuuid}%`);
+  }
+
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  // score é transformação monotônica do raw → ordenar pelo raw equivale ao display.
+  const orderSql =
+    filters.sort === "score"
+      ? "ORDER BY ps.score DESC NULLS LAST, g.game_creation DESC"
+      : "ORDER BY g.game_creation DESC";
+
+  const total = db
+    .prepare(`SELECT COUNT(*) as count FROM games g JOIN player_stats ps ON g.game_id = ps.game_id ${whereSql}`)
+    .get(...params) as any;
+
   const rows = db
     .prepare(`
     SELECT g.game_id, g.game_creation, g.game_duration, g.is_remake, g.puuid, g.raw_json,
            ps.champion_id, ps.win, ps.kills, ps.deaths, ps.assists,
            ps.double_kills, ps.triple_kills, ps.quadra_kills, ps.penta_kills,
-           ps.total_damage_dealt, ps.total_damage_taken, ps.total_heal, ps.gold_earned,
+           ps.total_damage_dealt, ps.total_damage_taken, ps.total_heal, ps.gold_earned, ps.score,
            ps.item0, ps.item1, ps.item2, ps.item3, ps.item4, ps.item5,
            (SELECT GROUP_CONCAT(ga.augment_id) FROM game_augments ga WHERE ga.game_id = g.game_id ORDER BY ga.slot) as augment_ids
     FROM games g
     JOIN player_stats ps ON g.game_id = ps.game_id
-    ORDER BY g.game_creation DESC
+    ${whereSql}
+    ${orderSql}
     LIMIT ? OFFSET ?
   `)
-    .all(limit, offset);
+    .all(...params, limit, offset);
   const matches = rows.map((row: any) => {
     const maxStats = extractGameMaxStats(row.raw_json);
     const { raw_json, ...match } = row;
-    return { ...match, ...maxStats };
+    return {
+      ...match,
+      score: match.score != null ? toDisplayScore(match.score) : null,
+      ...maxStats,
+    };
   });
   return { matches, total: total.count };
 }
@@ -258,16 +434,172 @@ export function getMatchDetail(gameId: number): any {
   const augments = db
     .prepare("SELECT * FROM game_augments WHERE game_id = ? ORDER BY slot")
     .all(gameId);
+  const raw = game.raw_json ? JSON.parse(game.raw_json) : null;
+  const rawScores = raw ? computeAllParticipantScores(raw, getWeights(), scoreResolvers()) : {};
+  const scores: Record<number, number> = {};
+  for (const [pid, s] of Object.entries(rawScores)) scores[Number(pid)] = toDisplayScore(s);
+  return { game, stats, augments, raw, scores };
+}
+
+// Painel de contexto do score (Fase 2.2). Recebe a partida + o participantId
+// clicado e devolve: o breakdown da nota nessa partida, comparação com o seu
+// score na mesma partida e — quando o jogador tem puuid — a evolução do score
+// ao longo das partidas compartilhadas, top 3 partidas e médias por campeão.
+// Tudo derivado do raw_json (não persiste).
+export interface PlayerScoreContext {
+  name: string;
+  puuid: string | null;
+  championId: number;
+  isSelf: boolean;
+  thisMatch: ScoreBreakdown;
+  /** Seu score (do dono do tracker) na MESMA partida, para comparação. */
+  selfThisMatch: number | null;
+  /** Evolução: pontos (creation asc) das partidas compartilhadas com o jogador. */
+  history: { game_id: number; game_creation: number; score: number; champion_id: number; win: number }[];
+  /** Top 3 partidas por score. */
+  topMatches: { game_id: number; game_creation: number; score: number; champion_id: number; win: number }[];
+  /** Médias por campeão (>=1 jogo), ordenadas por score médio desc. */
+  championAverages: { champion_id: number; games: number; avgScore: number }[];
+  sharedGames: number;
+}
+
+function participantNameFromRaw(raw: any, participantId: number): string {
+  const participants = raw.participants || [];
+  const identities = raw.participantIdentities || [];
+  const idx = participants.findIndex((p: any) => (p.participantId ?? 0) === participantId);
+  if (idx < 0) return `Player ${participantId}`;
+  const p = participants[idx];
+  const identity = identities[idx];
+  const gameName =
+    identity?.player?.gameName || identity?.player?.summonerName || p.summonerName || p.riotIdGameName;
+  const tagLine = identity?.player?.tagLine || p.riotIdTagline;
+  if (!gameName) return `Player ${participantId}`;
+  return tagLine ? `${gameName}#${tagLine}` : gameName;
+}
+
+function participantPuuidFromRaw(raw: any, participantId: number): string | null {
+  const participants = raw.participants || [];
+  const identities = raw.participantIdentities || [];
+  const idx = participants.findIndex((p: any) => (p.participantId ?? 0) === participantId);
+  if (idx < 0) return null;
+  const pp = participants[idx]?.puuid || identities[idx]?.player?.puuid || null;
+  return pp && !/^0+(-0+)*$/.test(pp) ? pp : null;
+}
+
+export function getPlayerScoreContext(
+  gameId: number,
+  participantId: number,
+): PlayerScoreContext | null {
+  const game = db.prepare("SELECT raw_json FROM games WHERE game_id = ?").get(gameId) as
+    | { raw_json: string | null }
+    | undefined;
+  if (!game?.raw_json) return null;
+
+  let raw: any;
+  try {
+    raw = JSON.parse(game.raw_json);
+  } catch {
+    return null;
+  }
+
+  const weights = getWeights();
+  const resolvers = scoreResolvers();
+
+  const thisMatch = explainScore(raw, { participantId }, weights, resolvers);
+  if (!thisMatch) return null;
+
+  const puuid = participantPuuidFromRaw(raw, participantId);
+  const name = participantNameFromRaw(raw, participantId);
+  const userPuuids = new Set(getAllPuuids());
+  const isSelf = puuid != null && userPuuids.has(puuid);
+
+  // Seu score na mesma partida: dono do tracker presente neste jogo.
+  let selfThisMatch: number | null = null;
+  for (const up of userPuuids) {
+    const b = explainScore(raw, { puuid: up }, weights, resolvers);
+    if (b) {
+      selfThisMatch = b.display;
+      break;
+    }
+  }
+
+  const history: PlayerScoreContext["history"] = [];
+  const champAgg = new Map<number, { sum: number; games: number }>();
+
+  if (puuid) {
+    // Varre todas as partidas que contêm esse puuid e calcula o score dele em cada.
+    const games = db
+      .prepare(
+        "SELECT game_id, game_creation, raw_json FROM games WHERE raw_json IS NOT NULL AND is_remake = 0 ORDER BY game_creation ASC",
+      )
+      .all() as { game_id: number; game_creation: number; raw_json: string }[];
+
+    for (const g of games) {
+      let r: any;
+      try {
+        r = JSON.parse(g.raw_json);
+      } catch {
+        continue;
+      }
+      const b = explainScore(r, { puuid }, weights, resolvers);
+      if (!b) continue;
+      // championId + win do jogador nesta partida (puuid pode vir do participant
+      // ou de participantIdentities, conforme o formato da partida).
+      const parts = r.participants || [];
+      const idents = r.participantIdentities || [];
+      let pIdx = parts.findIndex((p: any) => p.puuid === puuid);
+      if (pIdx < 0) pIdx = idents.findIndex((pi: any) => pi?.player?.puuid === puuid);
+      const part = pIdx >= 0 ? parts[pIdx] : null;
+      const s = part?.stats || part || {};
+      const champion_id = part?.championId ?? s.championId ?? 0;
+      const win = s.win ? 1 : 0;
+      history.push({ game_id: g.game_id, game_creation: g.game_creation, score: b.display, champion_id, win });
+      const agg = champAgg.get(champion_id) ?? { sum: 0, games: 0 };
+      agg.sum += b.display;
+      agg.games += 1;
+      champAgg.set(champion_id, agg);
+    }
+  } else {
+    // Sem puuid: só temos esta partida.
+    const part = (raw.participants || []).find((p: any) => (p.participantId ?? 0) === participantId);
+    const s = part?.stats || part || {};
+    const champion_id = part?.championId ?? s.championId ?? 0;
+    history.push({
+      game_id: gameId,
+      game_creation: (raw.gameCreation as number) ?? Date.now(),
+      score: thisMatch.display,
+      champion_id,
+      win: s.win ? 1 : 0,
+    });
+  }
+
+  const topMatches = [...history].sort((a, b) => b.score - a.score).slice(0, 3);
+  const championAverages = Array.from(champAgg.entries())
+    .map(([champion_id, v]) => ({ champion_id, games: v.games, avgScore: Math.round(v.sum / v.games) }))
+    .sort((a, b) => b.avgScore - a.avgScore);
+
   return {
-    game,
-    stats,
-    augments,
-    raw: game.raw_json ? JSON.parse(game.raw_json) : null,
+    name,
+    puuid,
+    championId: thisMatch ? participantChampionFromRaw(raw, participantId) : 0,
+    isSelf,
+    thisMatch,
+    selfThisMatch,
+    history,
+    topMatches,
+    championAverages,
+    sharedGames: history.length,
   };
 }
 
+function participantChampionFromRaw(raw: any, participantId: number): number {
+  const part = (raw.participants || []).find((p: any) => (p.participantId ?? 0) === participantId);
+  const s = part?.stats || part || {};
+  return part?.championId ?? s.championId ?? 0;
+}
+
 export function getChampionStatsAll(): any[] {
-  return db
+  const rows = db
     .prepare(`
     SELECT
       ps.champion_id,
@@ -291,7 +623,31 @@ export function getChampionStatsAll(): any[] {
     GROUP BY ps.champion_id
     ORDER BY games DESC
   `)
-    .all();
+    .all() as any[];
+
+  // Score médio por campeão (Fase 4.4). O display é transformação não-linear do
+  // raw, então a média precisa ser feita sobre o display em JS (não AVG no SQL).
+  const scoreRows = db
+    .prepare(`
+    SELECT ps.champion_id, ps.score
+    FROM player_stats ps
+    JOIN games g ON ps.game_id = g.game_id
+    WHERE g.is_remake = 0 AND ps.score IS NOT NULL
+  `)
+    .all() as { champion_id: number; score: number }[];
+
+  const scoreAgg = new Map<number, { sum: number; n: number }>();
+  for (const r of scoreRows) {
+    const a = scoreAgg.get(r.champion_id) ?? { sum: 0, n: 0 };
+    a.sum += toDisplayScore(r.score);
+    a.n += 1;
+    scoreAgg.set(r.champion_id, a);
+  }
+
+  return rows.map((row) => {
+    const a = scoreAgg.get(row.champion_id);
+    return { ...row, avg_score: a && a.n > 0 ? Math.round(a.sum / a.n) : null };
+  });
 }
 
 export function getAugmentStatsAll(championId?: number): any[] {
@@ -381,6 +737,19 @@ export function getDashboardData(): any {
   `)
     .all();
 
+  // Trend do score (Fase 4.6): últimas 20 partidas em ordem cronológica (display).
+  const trendRows = db
+    .prepare(`
+    SELECT ps.score
+    FROM games g
+    JOIN player_stats ps ON g.game_id = ps.game_id
+    WHERE g.is_remake = 0 AND ps.score IS NOT NULL
+    ORDER BY g.game_creation DESC
+    LIMIT 20
+  `)
+    .all() as { score: number }[];
+  const scoreTrend = trendRows.map((r) => toDisplayScore(r.score)).reverse();
+
   return {
     totalGames: totals.totalGames ?? 0,
     wins: totals.wins ?? 0,
@@ -396,6 +765,7 @@ export function getDashboardData(): any {
       pentas: totals.pentas ?? 0,
     },
     topAugments,
+    scoreTrend,
   };
 }
 
@@ -403,6 +773,7 @@ export function getAugmentStatsWithChampions(): {
   augment_id: number;
   picks: number;
   wins: number;
+  synergyScore: number | null;
   champions: { champion_id: number; picks: number; wins: number }[];
 }[] {
   const augments = db
@@ -437,10 +808,34 @@ export function getAugmentStatsWithChampions(): {
       .push({ champion_id: row.champion_id, picks: row.picks, wins: row.wins });
   }
 
-  return augments.map((a) => ({
-    ...a,
-    champions: champMap.get(a.augment_id) ?? [],
-  }));
+  // Synergy score (Fase 4.3): score médio das partidas em que o augment foi pego.
+  // Display é não-linear → média feita em JS sobre o display.
+  const scoreRows = db
+    .prepare(`
+    SELECT ga.augment_id, ps.score
+    FROM game_augments ga
+    JOIN player_stats ps ON ga.game_id = ps.game_id
+    JOIN games g ON ga.game_id = g.game_id
+    WHERE g.is_remake = 0 AND ps.score IS NOT NULL
+  `)
+    .all() as { augment_id: number; score: number }[];
+
+  const scoreAgg = new Map<number, { sum: number; n: number }>();
+  for (const r of scoreRows) {
+    const a = scoreAgg.get(r.augment_id) ?? { sum: 0, n: 0 };
+    a.sum += toDisplayScore(r.score);
+    a.n += 1;
+    scoreAgg.set(r.augment_id, a);
+  }
+
+  return augments.map((a) => {
+    const sc = scoreAgg.get(a.augment_id);
+    return {
+      ...a,
+      synergyScore: sc && sc.n > 0 ? Math.round(sc.sum / sc.n) : null,
+      champions: champMap.get(a.augment_id) ?? [],
+    };
+  });
 }
 
 export function getChampionMatchHistory(
@@ -456,7 +851,7 @@ export function getChampionMatchHistory(
     SELECT g.game_id, g.game_creation, g.game_duration, g.is_remake, g.puuid, g.raw_json,
            ps.champion_id, ps.win, ps.kills, ps.deaths, ps.assists,
            ps.double_kills, ps.triple_kills, ps.quadra_kills, ps.penta_kills,
-           ps.total_damage_dealt, ps.total_damage_taken, ps.total_heal, ps.gold_earned,
+           ps.total_damage_dealt, ps.total_damage_taken, ps.total_heal, ps.gold_earned, ps.score,
            ps.item0, ps.item1, ps.item2, ps.item3, ps.item4, ps.item5,
            (SELECT GROUP_CONCAT(ga.augment_id) FROM game_augments ga WHERE ga.game_id = g.game_id ORDER BY ga.slot) as augment_ids
     FROM games g
@@ -469,7 +864,11 @@ export function getChampionMatchHistory(
   const matches = rows.map((row: any) => {
     const maxStats = extractGameMaxStats(row.raw_json);
     const { raw_json, ...match } = row;
-    return { ...match, ...maxStats };
+    return {
+      ...match,
+      score: match.score != null ? toDisplayScore(match.score) : null,
+      ...maxStats,
+    };
   });
   return { matches, total: total.count };
 }
@@ -510,9 +909,15 @@ export function insertGameFull(gameData: any, puuid: string): boolean {
       game_id, champion_id, win, kills, deaths, assists,
       double_kills, triple_kills, quadra_kills, penta_kills,
       total_damage_dealt, total_damage_taken, gold_earned, total_heal,
-      largest_killing_spree, item0, item1, item2, item3, item4, item5, item6
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      largest_killing_spree, item0, item1, item2, item3, item4, item5, item6, score,
+      total_time_cc_dealt, physical_damage, magic_damage, true_damage,
+      vision_score, time_played, killing_sprees
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+
+  const ext = extractExtendedStats(s);
+
+  const score = computeBaseScore(gameData, puuid, getWeights(), scoreResolvers());
 
   const insertAugmentStmt = db.prepare(`
     INSERT OR IGNORE INTO game_augments (game_id, slot, augment_id) VALUES (?, ?, ?)
@@ -555,6 +960,14 @@ export function insertGameFull(gameData: any, puuid: string): boolean {
       s.item4 ?? null,
       s.item5 ?? null,
       s.item6 ?? null,
+      score,
+      ext.total_time_cc_dealt,
+      ext.physical_damage,
+      ext.magic_damage,
+      ext.true_damage,
+      ext.vision_score,
+      ext.time_played,
+      ext.killing_sprees,
     );
 
     // Augments
@@ -604,6 +1017,9 @@ export function getTeammateStats(): any[] {
     )
     .all() as any[];
 
+  const weights = getWeights();
+  const resolvers = scoreResolvers();
+
   const playerMap = new Map<
     string,
     {
@@ -616,6 +1032,11 @@ export function getTeammateStats(): any[] {
       assists: number;
       champions: Map<number, number>;
       lastPlayed: number;
+      // Fase 4.5: score médio do amigo + seu score nas mesmas partidas.
+      scoreSum: number;
+      scoreN: number;
+      selfScoreSum: number;
+      selfScoreN: number;
     }
   >();
 
@@ -646,6 +1067,12 @@ export function getTeammateStats(): any[] {
     }
 
     if (myTeamId === null) continue;
+
+    // Score de cada participante nesta partida (Fase 4.5) + seu próprio score.
+    const rawScores = computeAllParticipantScores(raw, weights, resolvers);
+    const scoreMap: Record<number, number> = {};
+    for (const [pid, s] of Object.entries(rawScores)) scoreMap[Number(pid)] = toDisplayScore(s);
+    const userScore = myParticipantId != null ? scoreMap[myParticipantId] : undefined;
 
     // Collect teammates (same team, not self)
     for (let i = 0; i < participants.length; i++) {
@@ -691,6 +1118,10 @@ export function getTeammateStats(): any[] {
           assists: 0,
           champions: new Map(),
           lastPlayed: 0,
+          scoreSum: 0,
+          scoreN: 0,
+          selfScoreSum: 0,
+          selfScoreN: 0,
         });
       }
 
@@ -705,6 +1136,17 @@ export function getTeammateStats(): any[] {
       entry.deaths += s.deaths ?? 0;
       entry.assists += s.assists ?? 0;
       entry.lastPlayed = Math.max(entry.lastPlayed, game.game_creation);
+
+      // Scores (Fase 4.5): nota do amigo nesta partida + sua nota na mesma partida.
+      const friendScore = scoreMap[p.participantId];
+      if (friendScore != null) {
+        entry.scoreSum += friendScore;
+        entry.scoreN++;
+        if (userScore != null) {
+          entry.selfScoreSum += userScore;
+          entry.selfScoreN++;
+        }
+      }
 
       const champId = p.championId ?? s.championId ?? 0;
       entry.champions.set(champId, (entry.champions.get(champId) || 0) + 1);
@@ -725,6 +1167,8 @@ export function getTeammateStats(): any[] {
         .slice(0, 5)
         .map(([champion_id, games]) => ({ champion_id, games })),
       lastPlayed: p.lastPlayed,
+      avgScore: p.scoreN > 0 ? Math.round(p.scoreSum / p.scoreN) : null,
+      avgSelfScore: p.selfScoreN > 0 ? Math.round(p.selfScoreSum / p.selfScoreN) : null,
     }))
     .sort((a, b) => b.games - a.games);
 }
@@ -842,6 +1286,92 @@ export function getSetting(key: string): string | null {
 
 export function setSetting(key: string, value: string): void {
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
+}
+
+// ---- Scoring ----
+
+// Pesos do score são tunáveis (Fase 4.7). Persistidos como JSON em settings;
+// na ausência ou em caso de parse inválido, caímos nos defaults.
+export function getWeights(): ScoreWeights {
+  const raw = getSetting("score_weights");
+  if (!raw) return DEFAULT_WEIGHTS;
+  try {
+    return { ...DEFAULT_WEIGHTS, ...JSON.parse(raw) };
+  } catch {
+    return DEFAULT_WEIGHTS;
+  }
+}
+
+// Tier Multiplier (Fase 1.3) é injetado por tiers.ts via setTierResolver. Usa-se
+// injeção (em vez de import direto) para evitar ciclo db <-> tiers, já que tiers.ts
+// importa db para persistir o cache em champion_tiers. Default 1.0 até carregar.
+let tierResolver: (championId: number) => number = () => 1.0;
+export function setTierResolver(fn: (championId: number) => number): void {
+  tierResolver = fn;
+}
+
+function scoreResolvers() {
+  return { roleOf: getChampionRole, tierOf: tierResolver };
+}
+
+// ---- champion_tiers cache (lido/escrito por tiers.ts) ----
+
+export function getTiersAge(): number | null {
+  const row = db.prepare("SELECT MAX(fetched_at) as t FROM champion_tiers").get() as {
+    t: number | null;
+  };
+  return row?.t ?? null;
+}
+
+export function getCachedTiers(): { champion_id: number; tier: string; multiplier: number }[] {
+  return db
+    .prepare("SELECT champion_id, tier, multiplier FROM champion_tiers")
+    .all() as { champion_id: number; tier: string; multiplier: number }[];
+}
+
+export function replaceTiers(
+  rows: { champion_id: number; tier: string; multiplier: number }[],
+): void {
+  const now = Date.now();
+  const del = db.prepare("DELETE FROM champion_tiers");
+  const ins = db.prepare(
+    "INSERT OR REPLACE INTO champion_tiers (champion_id, tier, multiplier, fetched_at) VALUES (?, ?, ?, ?)",
+  );
+  const tx = db.transaction(() => {
+    del.run();
+    for (const r of rows) ins.run(r.champion_id, r.tier, r.multiplier, now);
+  });
+  tx();
+}
+
+// Recalcula o score de todas as partidas a partir do raw_json. Usado no backfill
+// da migração e, futuramente, ao re-tunar pesos ou atualizar a tier list.
+export function recomputeAllScores(): number {
+  const weights = getWeights();
+  const rows = db
+    .prepare("SELECT game_id, puuid, raw_json FROM games WHERE raw_json IS NOT NULL")
+    .all() as { game_id: number; puuid: string; raw_json: string }[];
+
+  const update = db.prepare("UPDATE player_stats SET score = ? WHERE game_id = ?");
+  let updated = 0;
+
+  const tx = db.transaction(() => {
+    for (const row of rows) {
+      if (!row.puuid) continue;
+      try {
+        const score = computeBaseScore(JSON.parse(row.raw_json), row.puuid, weights, scoreResolvers());
+        if (score !== null) {
+          update.run(score, row.game_id);
+          updated++;
+        }
+      } catch {
+        /* ignore parse errors */
+      }
+    }
+  });
+  tx();
+
+  return updated;
 }
 
 // ---- Export / Import ----

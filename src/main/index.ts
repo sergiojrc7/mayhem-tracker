@@ -1,9 +1,11 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage } from "electron";
 import path from "path";
-import { initDatabase, getSetting } from "./db";
+import { initDatabase, getSetting, recomputeAllScores, setTierResolver } from "./db";
 import { registerIpcHandlers } from "./ipc-handlers";
 import { startPolling, stopPolling, getStatus, fetchNewGames } from "./lcu";
-import { loadChampionData, loadAugmentData } from "./dragon";
+import { loadChampionData, loadAugmentData, waitForChampionData } from "./dragon";
+import { loadTierData, waitForTierData, getTierMultiplier } from "./tiers";
+import { BUILD_TAG } from "../build";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -110,8 +112,15 @@ function createTray() {
 }
 
 app.whenReady().then(async () => {
+  console.log(`Mayhem Tracker build: ${BUILD_TAG} (v${app.getVersion()})`);
+
   // Initialize database first
   initDatabase();
+
+  // Tier Multiplier (Fase 1.3): registra o resolver (retorna 1.0 até carregar) e
+  // dispara o load (cache 24h em champion_tiers + fetch do endpoint da Blitz).
+  setTierResolver(getTierMultiplier);
+  loadTierData();
 
   // Load assets in background
   loadChampionData();
@@ -119,6 +128,20 @@ app.whenReady().then(async () => {
 
   createWindow();
   createTray();
+
+  // Os scores dependem das tags de campeão (Role Weight, Fase 1.2) e dos tiers
+  // (Fase 1.3), ambos assíncronos. Quando os dois ficarem prontos, recalcula e
+  // atualiza a UI para que papel + tier sejam aplicados às partidas armazenadas.
+  Promise.all([waitForChampionData(), waitForTierData()]).then(() => {
+    try {
+      recomputeAllScores();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("lcu:games-updated");
+      }
+    } catch (err) {
+      console.log("Score recompute after champion/tier load failed:", err);
+    }
+  });
 });
 
 app.on("before-quit", async (event) => {

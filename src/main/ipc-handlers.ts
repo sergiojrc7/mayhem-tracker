@@ -3,14 +3,22 @@ import fs from "fs";
 import * as db from "./db";
 import * as lcu from "./lcu";
 import * as dragon from "./dragon";
+import * as tiers from "./tiers";
 
 export function registerIpcHandlers(win: BrowserWindow) {
-  ipcMain.handle("db:match-history", (_event, limit: number, offset: number) => {
-    return db.getMatchHistory(limit, offset);
-  });
+  ipcMain.handle(
+    "db:match-history",
+    (_event, limit: number, offset: number, filters?: db.MatchFilters) => {
+      return db.getMatchHistory(limit, offset, filters);
+    },
+  );
 
   ipcMain.handle("db:match-detail", (_event, gameId: number) => {
     return db.getMatchDetail(gameId);
+  });
+
+  ipcMain.handle("db:player-score-context", (_event, gameId: number, participantId: number) => {
+    return db.getPlayerScoreContext(gameId, participantId);
   });
 
   ipcMain.handle("db:champion-stats", () => {
@@ -142,5 +150,22 @@ export function registerIpcHandlers(win: BrowserWindow) {
 
   ipcMain.handle("data:repair-puuids", () => {
     return db.repairPuuids();
+  });
+
+  ipcMain.handle("score:recompute", () => {
+    const updated = db.recomputeAllScores();
+    if (!win.isDestroyed()) win.webContents.send("lcu:games-updated");
+    return updated;
+  });
+
+  ipcMain.handle("tiers:list", () => {
+    return tiers.getTierTable();
+  });
+
+  ipcMain.handle("tiers:refresh", async () => {
+    const count = await tiers.refreshTiers();
+    db.recomputeAllScores();
+    if (!win.isDestroyed()) win.webContents.send("lcu:games-updated");
+    return count;
   });
 }

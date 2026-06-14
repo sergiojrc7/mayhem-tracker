@@ -5,6 +5,7 @@ import Champions from "./pages/Champions";
 import Augments from "./pages/Augments";
 import Friends from "./pages/Friends";
 import GlobalStats from "./pages/GlobalStats";
+import TierList from "./pages/TierList";
 import Settings from "./pages/Settings";
 
 export default function App() {
@@ -17,6 +18,7 @@ export default function App() {
           <Route path="/augments" element={<Augments />} />
           <Route path="/friends" element={<Friends />} />
           <Route path="/global" element={<GlobalStats />} />
+          <Route path="/tierlist" element={<TierList />} />
           <Route path="/settings" element={<Settings />} />
         </Route>
       </Routes>

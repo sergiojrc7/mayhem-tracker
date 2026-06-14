@@ -1,13 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
-import type { MatchListItem } from "../lib/types";
+import type { MatchListItem, MatchFilters } from "../lib/types";
 
 const PAGE_SIZE = 20;
 
-export function useMatches(championId?: number) {
+export function useMatches(championId?: number, filters?: MatchFilters) {
   const [matches, setMatches] = useState<MatchListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(false);
+
+  // Serializa os filtros para usar como dependência estável do efeito/callback.
+  const filtersKey = JSON.stringify(filters ?? {});
 
   const load = useCallback(
     async (reset = false) => {
@@ -17,7 +20,7 @@ export function useMatches(championId?: number) {
         const result =
           championId !== undefined
             ? await window.api.getChampionMatchHistory(championId, PAGE_SIZE, offset)
-            : await window.api.getMatchHistory(PAGE_SIZE, offset);
+            : await window.api.getMatchHistory(PAGE_SIZE, offset, filters);
         if (reset) {
           setMatches(result.matches);
         } else {
@@ -29,7 +32,7 @@ export function useMatches(championId?: number) {
         setLoading(false);
       }
     },
-    [championId, matches.length],
+    [championId, matches.length, filtersKey],
   );
 
   useEffect(() => {
@@ -37,7 +40,7 @@ export function useMatches(championId?: number) {
 
     const unsub = window.api.onGamesUpdated(() => load(true));
     return unsub;
-  }, [championId]);
+  }, [championId, filtersKey]);
 
   const loadMore = useCallback(() => {
     if (!loading && hasMore) load(false);

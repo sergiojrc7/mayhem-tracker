@@ -1,19 +1,34 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useMatches } from "../hooks/useMatches";
 import { useChampionData, getChampionName } from "../hooks/useChampions";
 import { useIpc } from "../hooks/useIpc";
-import type { MatchListItem, MatchDetail, DashboardData, ParsedParticipant } from "../lib/types";
+import type {
+  MatchListItem,
+  MatchDetail,
+  DashboardData,
+  ParsedParticipant,
+  MatchFilters,
+  ChampionStats,
+} from "../lib/types";
 import { parseParticipants, groupByTeam } from "../lib/participants";
 import ChampionIcon from "../components/ChampionIcon";
 import AugmentIcon from "../components/AugmentIcon";
 import ItemIcon from "../components/ItemIcon";
 import MultikillBadge from "../components/MultikillBadge";
+import ScoreBadge from "../components/ScoreBadge";
+import ScorePanel from "../components/ScorePanel";
+import ScoreTrendChart from "../components/ScoreTrendChart";
 import StatCard from "../components/StatCard";
 import { formatDuration, formatTimeAgo, formatKDA, kdaRatio } from "../lib/format";
 
 export default function MatchHistory() {
-  const { matches, total, loading, hasMore, loadMore } = useMatches();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [filters, setFilters] = useState<MatchFilters>({});
+  const { matches, total, loading, hasMore, loadMore } = useMatches(undefined, filters);
   const champData = useChampionData();
+  const { data: champStats } = useIpc<ChampionStats[]>(() => window.api.getChampionStats());
   const { data: dashboard, refetch: refetchDashboard } = useIpc<DashboardData>(() =>
     window.api.getDashboard(),
   );
@@ -21,6 +36,9 @@ export default function MatchHistory() {
   const [detail, setDetail] = useState<MatchDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [puuids, setPuuids] = useState<string[] | null>(null);
+  const [scorePanel, setScorePanel] = useState<{ gameId: number; participantId: number } | null>(
+    null,
+  );
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -64,6 +82,25 @@ export default function MatchHistory() {
     [expandedId],
   );
 
+  // Vindo do painel de amigos: abre a partida-alvo no Match History. Carrega
+  // páginas até a partida estar na lista, expande e rola até ela.
+  const targetGameId = (location.state as { expandGameId?: number } | null)?.expandGameId;
+  useEffect(() => {
+    if (!targetGameId) return;
+    const found = matches.some((m) => m.game_id === targetGameId);
+    if (found) {
+      if (expandedId !== targetGameId) toggleExpand(targetGameId);
+      requestAnimationFrame(() => {
+        document
+          .getElementById(`game-${targetGameId}`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+      navigate(location.pathname, { replace: true, state: {} });
+    } else if (hasMore && !loading) {
+      loadMore();
+    }
+  }, [targetGameId, matches, hasMore, loading, expandedId, toggleExpand, loadMore, navigate, location.pathname]);
+
   const avgKills =
     dashboard && dashboard.totalGames > 0
       ? (dashboard.totalKills / dashboard.totalGames).toFixed(1)
@@ -89,8 +126,10 @@ export default function MatchHistory() {
           <StatCard label="Total Games" value={dashboard.totalGames} />
           <StatCard label="Win Rate" value={winRate} />
           <StatCard label="Avg KDA" value={`${avgKills} / ${avgDeaths} / ${avgAssists}`} />
-          <div className="bg-lol-card rounded-xl border border-lol-border p-4">
-            <div className="text-xs text-lol-text uppercase tracking-wider mb-1">Multikills</div>
+          <div className="glass depth-hover rounded-xl p-4">
+            <div className="text-xs text-lol-text uppercase tracking-wider mb-1 font-medium">
+              Multikills
+            </div>
             <div className="grid grid-cols-4 gap-1">
               {[
                 { label: "D", value: dashboard.multikills.doubles, color: "text-sky-400" },
@@ -108,13 +147,28 @@ export default function MatchHistory() {
         </div>
       )}
 
+      {/* Fase 4.6 — Trend do score (últimas 20 partidas) */}
+      {dashboard && dashboard.scoreTrend && dashboard.scoreTrend.length >= 2 && (
+        <div className="glass rounded-xl p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs text-lol-text uppercase tracking-wider font-medium">
+              Score Trend
+            </div>
+            <div className="text-[10px] text-lol-text">últimas {dashboard.scoreTrend.length} partidas</div>
+          </div>
+          <ScoreTrendChart scores={dashboard.scoreTrend} />
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-lol-text-bright">Match History</h1>
         <span className="text-sm text-lol-text">{total} games</span>
       </div>
 
+      <FilterBar filters={filters} setFilters={setFilters} champStats={champStats} champData={champData} />
+
       {matches.length === 0 && !loading && (
-        <div className="bg-lol-card rounded-xl border border-lol-border p-8 text-center text-lol-text">
+        <div className="glass rounded-xl p-8 text-center text-lol-text">
           No ARAM Mayhem games found. Connect to the League client and click Refresh.
         </div>
       )}
@@ -130,6 +184,9 @@ export default function MatchHistory() {
             detailLoading={expandedId === m.game_id && detailLoading}
             puuids={puuids}
             onToggle={() => toggleExpand(m.game_id)}
+            onSelectPlayer={(participantId) =>
+              setScorePanel({ gameId: m.game_id, participantId })
+            }
           />
         ))}
       </div>
@@ -137,6 +194,123 @@ export default function MatchHistory() {
       {hasMore && <div ref={sentinelRef} className="h-1" />}
       {loading && matches.length > 0 && (
         <div className="text-center py-3 text-sm text-lol-text">Loading...</div>
+      )}
+
+      {scorePanel && (
+        <ScorePanel
+          gameId={scorePanel.gameId}
+          participantId={scorePanel.participantId}
+          champData={champData}
+          onClose={() => setScorePanel(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ── Fase 4.1 — Filtros do Match History ────────────────────────── */
+
+function FilterBar({
+  filters,
+  setFilters,
+  champStats,
+  champData,
+}: {
+  filters: MatchFilters;
+  setFilters: (f: MatchFilters) => void;
+  champStats: ChampionStats[] | null;
+  champData: any;
+}) {
+  const champOptions = useMemo(
+    () =>
+      (champStats ?? [])
+        .map((c) => ({ id: c.champion_id, name: getChampionName(champData, c.champion_id) }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [champStats, champData],
+  );
+
+  const set = (patch: Partial<MatchFilters>) => setFilters({ ...filters, ...patch });
+  const active =
+    filters.championId !== undefined ||
+    filters.result !== undefined ||
+    filters.days !== undefined ||
+    (filters.sort && filters.sort !== "recent");
+
+  const selectCls =
+    "glass rounded-lg px-2.5 py-1.5 text-xs text-lol-text-bright focus:outline-none focus:border-lol-gold/50 [&>option]:bg-lol-card";
+  const pill = (on: boolean) =>
+    `px-2.5 py-1.5 rounded-lg text-xs border transition-colors ${
+      on
+        ? "bg-lol-gold/15 text-lol-gold border-lol-gold/40"
+        : "glass text-lol-text hover:text-lol-text-bright"
+    }`;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {/* Champion */}
+      <select
+        value={filters.championId ?? ""}
+        onChange={(e) =>
+          set({ championId: e.target.value === "" ? undefined : Number(e.target.value) })
+        }
+        className={selectCls}
+      >
+        <option value="">All champions</option>
+        {champOptions.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+
+      {/* Result */}
+      <div className="flex gap-1">
+        <button
+          className={pill(filters.result === "win")}
+          onClick={() => set({ result: filters.result === "win" ? undefined : "win" })}
+        >
+          Wins
+        </button>
+        <button
+          className={pill(filters.result === "loss")}
+          onClick={() => set({ result: filters.result === "loss" ? undefined : "loss" })}
+        >
+          Losses
+        </button>
+      </div>
+
+      {/* Period */}
+      <div className="flex gap-1">
+        {[
+          { label: "7d", days: 7 },
+          { label: "30d", days: 30 },
+        ].map((p) => (
+          <button
+            key={p.days}
+            className={pill(filters.days === p.days)}
+            onClick={() => set({ days: filters.days === p.days ? undefined : p.days })}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Sort */}
+      <button
+        className={pill(filters.sort === "score")}
+        onClick={() => set({ sort: filters.sort === "score" ? "recent" : "score" })}
+        title="Ordenar pela maior nota"
+      >
+        ★ Score
+      </button>
+
+      {active && (
+        <button
+          className="px-2.5 py-1.5 rounded-lg text-xs text-lol-loss/80 hover:text-lol-loss"
+          onClick={() => setFilters({})}
+        >
+          Limpar
+        </button>
       )}
     </div>
   );
@@ -150,6 +324,7 @@ interface GameRowProps {
   detailLoading: boolean;
   puuids: string[] | null;
   onToggle: () => void;
+  onSelectPlayer: (participantId: number) => void;
 }
 
 function parseAugmentIds(raw: string | null): number[] {
@@ -201,6 +376,7 @@ function GameRow({
   detailLoading,
   puuids,
   onToggle,
+  onSelectPlayer,
 }: GameRowProps) {
   const isRemake = !!match.is_remake;
   const isWin = !!match.win;
@@ -208,15 +384,15 @@ function GameRow({
   const augmentIds = parseAugmentIds(match.augment_ids);
 
   return (
-    <div>
+    <div id={`game-${match.game_id}`} className="scroll-mt-4">
       <button
         onClick={onToggle}
-        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors text-left ${
+        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-l-[3px] transition-all text-left ${
           isRemake
-            ? "bg-white/[0.03] border-white/10 hover:bg-white/[0.06]"
+            ? "bg-white/[0.03] border-white/10 border-l-white/25 hover:bg-white/[0.06]"
             : isWin
-              ? "bg-lol-win/5 border-lol-win/20 hover:bg-lol-win/10"
-              : "bg-lol-loss/5 border-lol-loss/20 hover:bg-lol-loss/10"
+              ? "bg-lol-win/5 border-lol-win/20 border-l-lol-win hover:bg-lol-win/10 hover:shadow-[inset_3px_0_18px_-10px_rgba(40,167,69,0.9)]"
+              : "bg-lol-loss/5 border-lol-loss/20 border-l-lol-loss hover:bg-lol-loss/10 hover:shadow-[inset_3px_0_18px_-10px_rgba(220,53,69,0.9)]"
         }`}
       >
         <div
@@ -285,6 +461,8 @@ function GameRow({
             pentas={match.penta_kills}
           />
         </div>
+        <ScoreBadge score={match.score} />
+
         <div className="text-xs text-lol-text text-right shrink-0">
           <div>{formatDuration(match.game_duration)}</div>
           <div>{formatTimeAgo(match.game_creation)}</div>
@@ -292,11 +470,16 @@ function GameRow({
       </button>
 
       {expanded && (
-        <div className="mb-1 bg-lol-card rounded-b-lg border border-t-0 border-lol-border p-3">
+        <div className="mb-1 glass rounded-b-lg border-t-0 p-3">
           {detailLoading ? (
             <div className="text-sm text-lol-text text-center py-4">Loading...</div>
           ) : detail ? (
-            <MatchScoreboard detail={detail} champData={champData} puuids={puuids} />
+            <MatchScoreboard
+              detail={detail}
+              champData={champData}
+              puuids={puuids}
+              onSelectPlayer={onSelectPlayer}
+            />
           ) : null}
         </div>
       )}
@@ -306,16 +489,25 @@ function GameRow({
 
 /* ── Scoreboard grid layout ─────────────────────────────────── */
 
-const GRID_COLS = "grid-cols-[40px_minmax(80px,1fr)_76px_110px_110px_56px_56px_176px_100px]";
+const GRID_COLS = "grid-cols-[40px_minmax(80px,1fr)_76px_52px_110px_110px_56px_56px_176px_100px]";
+
+function scoreColor(score: number | undefined): string {
+  if (score == null) return "text-gray-500";
+  if (score >= 70) return "text-lol-gold";
+  if (score >= 40) return "text-sky-400";
+  return "text-gray-400";
+}
 
 function MatchScoreboard({
   detail,
   champData,
   puuids,
+  onSelectPlayer,
 }: {
   detail: MatchDetail;
   champData: any;
   puuids: string[] | null;
+  onSelectPlayer: (participantId: number) => void;
 }) {
   const participants = useMemo(
     () => (detail.raw ? parseParticipants(detail.raw, puuids) : []),
@@ -352,6 +544,8 @@ function MatchScoreboard({
           players={players}
           maxStats={gameMaxStats}
           champData={champData}
+          scores={detail.scores}
+          onSelectPlayer={onSelectPlayer}
         />
       ))}
     </div>
@@ -363,11 +557,15 @@ function TeamScoreboard({
   players,
   maxStats,
   champData,
+  scores,
+  onSelectPlayer,
 }: {
   teamId: number;
   players: ParsedParticipant[];
   maxStats: { dmg: number; taken: number; gold: number; heal: number };
   champData: any;
+  scores: Record<number, number>;
+  onSelectPlayer: (participantId: number) => void;
 }) {
   const isWin = players[0]?.win ?? false;
 
@@ -389,6 +587,7 @@ function TeamScoreboard({
         <span></span>
         <span>Player</span>
         <span className="text-center">KDA</span>
+        <span className="text-center">Score</span>
         <span className="text-center">Damage</span>
         <span className="text-center">Taken</span>
         <span className="text-right">Gold</span>
@@ -399,7 +598,14 @@ function TeamScoreboard({
 
       {/* Player rows */}
       {players.map((p) => (
-        <PlayerRow key={p.participantId} player={p} maxStats={maxStats} champData={champData} />
+        <PlayerRow
+          key={p.participantId}
+          player={p}
+          maxStats={maxStats}
+          champData={champData}
+          score={scores[p.participantId]}
+          onSelect={() => onSelectPlayer(p.participantId)}
+        />
       ))}
     </div>
   );
@@ -421,16 +627,22 @@ function PlayerRow({
   player: p,
   maxStats,
   champData,
+  score,
+  onSelect,
 }: {
   player: ParsedParticipant;
   maxStats: { dmg: number; taken: number; gold: number; heal: number };
   champData: any;
+  score: number | undefined;
+  onSelect: () => void;
 }) {
   const kda = kdaRatio(p.kills, p.deaths, p.assists);
 
   return (
     <div
-      className={`px-3 py-1.5 border-b border-lol-border/30 last:border-b-0 grid ${GRID_COLS} gap-2 items-center ${
+      onClick={onSelect}
+      title="Ver contexto do score deste jogador"
+      className={`px-3 py-1.5 border-b border-lol-border/30 last:border-b-0 grid ${GRID_COLS} gap-2 items-center cursor-pointer hover:bg-white/[0.04] transition-colors ${
         p.isSelf ? "border-l-2 border-l-lol-gold bg-lol-gold/5" : ""
       }`}
     >
@@ -459,6 +671,14 @@ function PlayerRow({
         >
           {kda}
         </div>
+      </div>
+
+      {/* Score */}
+      <div
+        className={`text-center text-xs font-bold ${scoreColor(score)}`}
+        title="Score deste jogador na partida (0–100)"
+      >
+        {score != null ? score : "—"}
       </div>
 
       {/* Damage dealt */}

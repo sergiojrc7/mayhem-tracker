@@ -273,7 +273,7 @@ export default function GlobalStats() {
             />
           </div>
 
-          <div className="bg-lol-card rounded-xl border border-lol-border overflow-hidden">
+          <div className="glass rounded-xl overflow-hidden">
             <table className="w-full">
               <thead className="bg-lol-dark/50">
                 <tr>
@@ -351,7 +351,7 @@ export default function GlobalStats() {
             </div>
           </div>
 
-          <div className="bg-lol-card rounded-xl border border-lol-border overflow-hidden">
+          <div className="glass rounded-xl overflow-hidden">
             <table className="w-full">
               <thead className="bg-lol-dark/50">
                 <tr>

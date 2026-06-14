@@ -57,6 +57,7 @@ export interface MatchListItem {
   total_damage_taken: number;
   total_heal: number;
   gold_earned: number;
+  score: number | null;
   item0: number | null;
   item1: number | null;
   item2: number | null;
@@ -74,6 +75,7 @@ export interface MatchDetail {
   stats: PlayerStatsRecord;
   augments: GameAugment[];
   raw: any;
+  scores: Record<number, number>;
 }
 
 export interface ChampionStats {
@@ -88,6 +90,7 @@ export interface ChampionStats {
   avg_assists: number;
   avg_damage: number;
   avg_gold: number;
+  avg_score: number | null;
   double_kills: number;
   triple_kills: number;
   quadra_kills: number;
@@ -110,6 +113,7 @@ export interface AugmentStatsDetailed {
   augment_id: number;
   picks: number;
   wins: number;
+  synergyScore: number | null;
   champions: { champion_id: number; picks: number; wins: number }[];
 }
 
@@ -128,6 +132,7 @@ export interface DashboardData {
     pentas: number;
   };
   topAugments: AugmentStats[];
+  scoreTrend: number[];
 }
 
 export interface ChampionData {
@@ -156,6 +161,8 @@ export interface TeammateStats {
   assists: number;
   champions: { champion_id: number; games: number }[];
   lastPlayed: number;
+  avgScore: number | null;
+  avgSelfScore: number | null;
 }
 
 export interface GlobalStats {
@@ -188,14 +195,64 @@ export interface ParsedParticipant {
   isSelf: boolean;
 }
 
+export interface ScoreBreakdown {
+  role: string | null;
+  tierMultiplier: number;
+  winApplied: boolean;
+  composite: number;
+  display: number;
+  contributions: {
+    kda: number;
+    damageShare: number;
+    tankCredit: number;
+    healShare: number;
+    goldEfficiency: number;
+    multikill: number;
+  };
+  ratios: {
+    kda: number;
+    damageShare: number;
+    tankCredit: number;
+    healShare: number;
+    goldEfficiency: number;
+  };
+  damageSharePct: number;
+}
+
+export interface PlayerScoreContext {
+  name: string;
+  puuid: string | null;
+  championId: number;
+  isSelf: boolean;
+  thisMatch: ScoreBreakdown;
+  selfThisMatch: number | null;
+  history: { game_id: number; game_creation: number; score: number; champion_id: number; win: number }[];
+  topMatches: { game_id: number; game_creation: number; score: number; champion_id: number; win: number }[];
+  championAverages: { champion_id: number; games: number; avgScore: number }[];
+  sharedGames: number;
+}
+
+export interface MatchFilters {
+  championId?: number;
+  result?: "win" | "loss";
+  days?: number;
+  sort?: "recent" | "score";
+  withPuuid?: string;
+}
+
 export type LcuStatus = "disconnected" | "connecting" | "connected";
 
 export interface ElectronAPI {
   getMatchHistory: (
     limit: number,
     offset: number,
+    filters?: MatchFilters,
   ) => Promise<{ matches: MatchListItem[]; total: number }>;
   getMatchDetail: (gameId: number) => Promise<MatchDetail>;
+  getPlayerScoreContext: (
+    gameId: number,
+    participantId: number,
+  ) => Promise<PlayerScoreContext | null>;
   getChampionStats: () => Promise<ChampionStats[]>;
   getAugmentStats: (championId?: number) => Promise<AugmentStats[]>;
   getAugmentStatsDetailed: () => Promise<AugmentStatsDetailed[]>;
@@ -216,6 +273,23 @@ export interface ElectronAPI {
   getAugmentData: () => Promise<AugmentData>;
   onStatusChanged: (callback: (status: LcuStatus) => void) => () => void;
   onGamesUpdated: (callback: () => void) => () => void;
+  recomputeScores: () => Promise<number>;
+  getSetting: (key: string) => Promise<string | null>;
+  setSetting: (key: string, value: string) => Promise<void>;
+  exportData: () => Promise<{ success: boolean; path?: string }>;
+  importData: () => Promise<{ success: boolean; imported?: number }>;
+  repairPuuids: () => Promise<{ repairedGames: number; discoveredAccounts: number }>;
+  getTierList: () => Promise<{ champion_id: number; tier: string; multiplier: number }[]>;
+  refreshTiers: () => Promise<number>;
+  getVersion: () => Promise<string>;
+  checkForUpdate: () => Promise<{
+    hasUpdate: boolean;
+    latest?: string;
+    current?: string;
+    url?: string;
+    error?: string;
+  }>;
+  openUrl: (url: string) => Promise<void>;
 }
 
 declare global {
